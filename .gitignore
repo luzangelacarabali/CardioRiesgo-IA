@@ -1,0 +1,9 @@
+# Llaves del endpoint: nunca se suben
+app/.streamlit/secrets.toml
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
