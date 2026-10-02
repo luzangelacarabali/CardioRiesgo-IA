@@ -2,7 +2,7 @@
 
 Modelo de inteligencia artificial orientado a identificar el riesgo de enfermedades cardiovasculares a partir de datos clínicos y características de los pacientes, construido y desplegado con **Azure Machine Learning**.
 
-**Microproyecto 3 · Computación en la Nube · Prof. Oscar H. Mondragón · Universidad Autónoma de Occidente**
+**Microproyecto 3**
 *Prototipo académico de apoyo a la decisión clínica. No reemplaza el criterio médico ni constituye un diagnóstico.*
 
 ## El problema
