@@ -1,3 +1,4 @@
+
 import json
 import os
 from pathlib import Path
@@ -255,13 +256,10 @@ with st.sidebar:
     st.caption(f"Se marca predicción positiva si la probabilidad ≥ **{thr:.0%}**. "
                "Bajar el umbral detecta más casos (más Recall) pero genera más falsas alarmas.")
 
+    # La conexión con Azure ya no se pide en pantalla: solo se usa si existe en .env / secrets.
     url, key = endpoint_for(model)
-    with st.expander("☁️ Conexión Azure ML", expanded=not (url and key)):
-        url = st.text_input("URL del endpoint", value=url)
-        key = st.text_input("Llave", value=key, type="password")
-        input_name = st.text_input("Input del servicio", value=get_setting("AZURE_INPUT_NAME", "WebServiceInput0"))
-        dummy_target = st.toggle("Enviar TenYearCHD = 0", value=get_setting("INCLUDE_DUMMY_TARGET", "true").lower() == "true",
-                                 help="Algunos endpoints de Designer esperan el esquema completo con la columna objetivo.")
+    input_name = get_setting("AZURE_INPUT_NAME", "WebServiceInput0")
+    dummy_target = get_setting("INCLUDE_DUMMY_TARGET", "true").lower() == "true"
     live = bool(url and key)
     st.divider()
     st.info("Prototipo académico. No sustituye la valoración de un profesional de la salud.")
@@ -365,12 +363,13 @@ with tab_pred:
                     else:
                         ss["result"] = dict(mode="demo", model=model, prob=DEMO_VALUES[model],
                                             label=None, record=record, payload=None, raw=None)
-                except requests.HTTPError as e:
-                    ss.pop("result", None); st.error(http_hint(e))
-                except requests.RequestException as e:
-                    ss.pop("result", None); st.error(f"No se pudo conectar con el endpoint: {e}")
-                except (KeyError, ValueError, IndexError, StopIteration) as e:
-                    ss.pop("result", None); st.error(f"No pude interpretar la respuesta: {e}")
+                except (requests.RequestException, KeyError, ValueError, IndexError, StopIteration) as e:
+                    # Endpoint no disponible o respuesta no interpretable: se usa el valor simulado
+                    code = getattr(getattr(e, "response", None), "status_code", None)
+                    why = ("el endpoint no existe o fue eliminado (404)" if code == 404
+                           else f"error al consultar Azure ({type(e).__name__})")
+                    ss["result"] = dict(mode="demo", model=model, prob=DEMO_VALUES[model], label=None,
+                                        record=record, payload=None, raw=None, fallback=why)
 
         res = ss.get("result")
         if not res:
@@ -411,8 +410,10 @@ with tab_pred:
 </div>
 """, unsafe_allow_html=True)
             if res["mode"] == "demo":
-                st.warning("Estos valores son **simulados** y no dependen de los datos ingresados. "
-                           "Configura el endpoint en la barra lateral para ver la predicción real.")
+                msg = "Valor **simulado**: no depende de los datos ingresados ni proviene de un modelo entrenado."
+                if res.get("fallback"):
+                    msg += f" No se pudo usar Azure ML: {res['fallback']}."
+                st.warning(msg)
             with st.expander("🔎 Ver datos enviados / respuesta del endpoint"):
                 st.json(res["payload"] if res["payload"] else res["record"], expanded=False)
                 if res["raw"]:
