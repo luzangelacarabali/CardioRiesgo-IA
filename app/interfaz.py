@@ -1,4 +1,3 @@
-
 import json
 import os
 from pathlib import Path
@@ -44,18 +43,8 @@ st.set_page_config(page_title="CardioRiesgo IA", page_icon=make_app_icon(), layo
 # ----------------------------------------------------------------------------
 # Configuración
 # ----------------------------------------------------------------------------
-MODELS = {
-    "Two-Class Logistic Regression": "LR",
-    "Two-Class Boosted Decision Tree": "BDT",
-    "Two-Class Decision Forest": "DF",
-    "Two-Class Neural Network": "NN",
-}
-DEMO_VALUES = {  # valores SIMULADOS (los de tu versión anterior); no vienen de ningún modelo
-    "Two-Class Logistic Regression": 0.18,
-    "Two-Class Boosted Decision Tree": 0.23,
-    "Two-Class Decision Forest": 0.20,
-    "Two-Class Neural Network": 0.25,
-}
+MODEL_NAME = "Two-Class Logistic Regression"   # único modelo desplegado en Azure ML
+DEMO_VALUE = 0.18  # valor SIMULADO, solo se usa si no hay endpoint configurado
 FEATURES = ["age", "sysBP", "diaBP", "totChol", "currentSmoker",
             "cigsPerDay", "glucose", "BMI", "diabetes"]
 EXAMPLE = dict(age=58, smoker="Sí", cigs=15, diabetes="No",
@@ -73,20 +62,25 @@ def get_setting(name, default=""):
     return os.getenv(name, default)
 
 
-def endpoint_for(model_name):
-    slug = MODELS[model_name]
-    url = get_setting(f"AZURE_ENDPOINT_URL_{slug}") or get_setting("AZURE_ENDPOINT_URL")
-    key = get_setting(f"AZURE_ENDPOINT_KEY_{slug}") or get_setting("AZURE_ENDPOINT_KEY")
-    return url, key
+def endpoint_config():
+    return get_setting("AZURE_ENDPOINT_URL"), get_setting("AZURE_ENDPOINT_KEY")
 
 
 # ----------------------------------------------------------------------------
 # Cliente Azure ML (formato típico de Designer; verifica con la pestaña Consume)
 # ----------------------------------------------------------------------------
-def call_endpoint(url, key, input_name, record, timeout=40):
+def call_endpoint(url, key, input_name, record, timeout=(5, 25)):
     payload = {"Inputs": {input_name: [record]}, "GlobalParameters": {}}
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
-    r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=timeout)
+    try:
+        r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=timeout)
+    except requests.ConnectionError:
+        # Los endpoints de Instancia de contenedor (ACI) del Diseñador suelen ser solo http
+        if url.startswith("https://") and "azurecontainer.io" in url:
+            url = "http://" + url[len("https://"):]
+            r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=timeout)
+        else:
+            raise
     r.raise_for_status()
     data = r.json()
     if isinstance(data, str):
@@ -250,18 +244,24 @@ div[data-testid="stFormSubmitButton"] button:hover {transform:translateY(-1px); 
 # ----------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("## ⚙️ Configuración")
-    model = st.selectbox("🤖 Modelo de IA", list(MODELS.keys()))
+    model = MODEL_NAME
+    st.markdown(f"**🤖 Modelo:** {MODEL_NAME}")
     st.markdown("### 🎚️ Umbral de clasificación")
     thr = st.slider("Umbral", 0.10, 0.90, 0.30, 0.05, format="%.2f", label_visibility="collapsed")
     st.caption(f"Se marca predicción positiva si la probabilidad ≥ **{thr:.0%}**. "
                "Bajar el umbral detecta más casos (más Recall) pero genera más falsas alarmas.")
 
     # La conexión con Azure ya no se pide en pantalla: solo se usa si existe en .env / secrets.
-    url, key = endpoint_for(model)
+    url, key = endpoint_config()
     input_name = get_setting("AZURE_INPUT_NAME", "WebServiceInput0")
     dummy_target = get_setting("INCLUDE_DUMMY_TARGET", "true").lower() == "true"
     live = bool(url and key)
     st.divider()
+    if live:
+        st.success("Endpoint de Azure configurado en `secrets.toml`.")
+    else:
+        st.warning("No encontré `AZURE_ENDPOINT_URL` y `AZURE_ENDPOINT_KEY` en "
+                   "`.streamlit/secrets.toml`: la app está en modo demostración.")
     st.info("Prototipo académico. No sustituye la valoración de un profesional de la salud.")
 
 # ----------------------------------------------------------------------------
@@ -273,8 +273,8 @@ st.markdown(f"""
 <div class="hero">
   <div>
     <h1>CardioRiesgo IA</h1>
-    <p>Apoyo a la decisión clínica: estimación del riesgo de enfermedad coronaria a 10 años con modelos de
-    Machine Learning entrenados con el Framingham Heart Study y desplegados en Azure.</p>
+    <p>Apoyo a la decisión clínica: estimación del riesgo de enfermedad coronaria a 10 años con un modelo de
+    Machine Learning (regresión logística) entrenado con el Framingham Heart Study y desplegado en Azure.</p>
     <span class="pill">{pill}</span>
   </div>
   <div class="hero-icon">
@@ -298,8 +298,8 @@ with tab_pred:
 
     with left:
         b1, b2, _ = st.columns([1, 1, 1.4])
-        b1.button("🧪 Cargar ejemplo", on_click=load_example, use_container_width=True)
-        b2.button("🧹 Restablecer", on_click=reset_form, use_container_width=True)
+        b1.button("🧪 Cargar ejemplo", on_click=load_example, width="stretch")
+        b2.button("🧹 Restablecer", on_click=reset_form, width="stretch")
 
         with st.form("paciente"):
             with st.container(border=True):
@@ -328,7 +328,7 @@ with tab_pred:
                 c2.number_input("Glucosa", 40, 400, step=1, key="glucose")
                 c3.number_input("IMC (BMI)", 15.0, 60.0, step=0.1, format="%.1f", key="BMI")
 
-            go = st.form_submit_button("🧠 Calcular estimación", use_container_width=True)
+            go = st.form_submit_button("🧠 Calcular estimación", width="stretch")
 
     with right:
         ss = st.session_state
@@ -361,15 +361,22 @@ with tab_pred:
                         ss["result"] = dict(mode="azure", model=model, prob=parsed["prob"],
                                             label=parsed["label"], record=record, payload=payload, raw=raw)
                     else:
-                        ss["result"] = dict(mode="demo", model=model, prob=DEMO_VALUES[model],
+                        ss["result"] = dict(mode="demo", model=model, prob=DEMO_VALUE,
                                             label=None, record=record, payload=None, raw=None)
-                except (requests.RequestException, KeyError, ValueError, IndexError, StopIteration) as e:
-                    # Endpoint no disponible o respuesta no interpretable: se usa el valor simulado
-                    code = getattr(getattr(e, "response", None), "status_code", None)
-                    why = ("el endpoint no existe o fue eliminado (404)" if code == 404
-                           else f"error al consultar Azure ({type(e).__name__})")
-                    ss["result"] = dict(mode="demo", model=model, prob=DEMO_VALUES[model], label=None,
-                                        record=record, payload=None, raw=None, fallback=why)
+                except requests.HTTPError as e:
+                    ss.pop("result", None)
+                    st.error("Azure respondió con error. " + http_hint(e))
+                except requests.ConnectionError:
+                    ss.pop("result", None)
+                    st.error("No se pudo conectar con el endpoint de Azure. Revisa que esté en estado "
+                             "**Healthy** en *Puntos de conexión* y que la URL de `secrets.toml` sea la "
+                             "del *REST endpoint* de la pestaña *Consumir*.")
+                except requests.Timeout:
+                    ss.pop("result", None)
+                    st.error("El endpoint de Azure tardó demasiado en responder (más de 25 s).")
+                except (KeyError, ValueError, IndexError, StopIteration) as e:
+                    ss.pop("result", None)
+                    st.error(f"Azure respondió, pero no pude leer la respuesta: {e}")
 
         res = ss.get("result")
         if not res:
@@ -424,17 +431,17 @@ with tab_pred:
 # Tab Modelos
 # ----------------------------------------------------------------------------
 with tab_models:
-    st.subheader("Comparación de modelos")
+    st.subheader("Métricas del modelo")
     mpath = Path(__file__).parent / "metrics.json"
     if not mpath.exists():
         st.info("Aún no hay métricas cargadas. Crea un archivo `metrics.json` junto a `interfaz.py` con los valores reales de **Evaluate Model** "
                 "de Azure ML Designer. Formato: lista de objetos como "
                 "`{\"model\": \"Logistic Regression\", \"Accuracy\": 0.0, \"Recall\": 0.0, \"F1\": 0.0, \"AUC\": 0.0}`. "
                 "Esta app no inventa métricas.")
-        st.dataframe(pd.DataFrame({"Modelo": list(MODELS.keys())}), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame({"Modelo": [MODEL_NAME]}), hide_index=True, width="stretch")
     else:
         dfm = pd.DataFrame(json.loads(mpath.read_text(encoding="utf-8")))
-        st.dataframe(dfm, hide_index=True, use_container_width=True)
+        st.dataframe(dfm, hide_index=True, width="stretch")
         metric_cols = [c for c in dfm.columns if c != "model"]
         chart = dfm.set_index("model")[metric_cols].apply(pd.to_numeric, errors="coerce")
         st.bar_chart(chart.T)
@@ -454,9 +461,9 @@ with tab_about:
             st.code(", ".join(FEATURES))
     with c2:
         with st.container(border=True):
-            st.markdown("### 🤖 Modelos del pipeline")
-            for m in MODELS:
-                st.markdown(f"- {m}")
+            st.markdown("### 🤖 Modelo desplegado")
+            st.markdown(f"- {MODEL_NAME}, seleccionado en Azure ML Designer tras compararlo con "
+                        "otros algoritmos por su Recall y AUC.")
             st.markdown("### ⚖️ Uso responsable")
             st.markdown("- Herramienta de **apoyo**, la decisión es del profesional.\n"
                         "- Un **falso negativo** (paciente de riesgo clasificado como bajo) es el error más costoso.\n"
